@@ -66,16 +66,33 @@ esp_err_t audio_handle_info(PDM_SOUND_TYPE voice)
     case SOUND_TYPE_FACTORY:
         sprintf(filepath, "%s/%s", CONFIG_BSP_SPIFFS_MOUNT_POINT, "factory.mp3");
         break;
+    case SOUND_TYPE_BRIGHTNESS_0:
+        sprintf(filepath, "%s/%s", CONFIG_BSP_SPIFFS_MOUNT_POINT, "brightness_0.mp3");
+        break;
+    case SOUND_TYPE_BRIGHTNESS_25:
+        sprintf(filepath, "%s/%s", CONFIG_BSP_SPIFFS_MOUNT_POINT, "brightness_25.mp3");
+        break;
+    case SOUND_TYPE_BRIGHTNESS_50:
+        sprintf(filepath, "%s/%s", CONFIG_BSP_SPIFFS_MOUNT_POINT, "brightness_50.mp3");
+        break;
+    case SOUND_TYPE_BRIGHTNESS_75:
+        sprintf(filepath, "%s/%s", CONFIG_BSP_SPIFFS_MOUNT_POINT, "brightness_75.mp3");
+        break;
+    case SOUND_TYPE_BRIGHTNESS_100:
+        sprintf(filepath, "%s/%s", CONFIG_BSP_SPIFFS_MOUNT_POINT, "brightness_100.mp3");
+        break;
     }
 
-    FILE *fp = fopen(filepath, "r");
-    ESP_GOTO_ON_FALSE(fp, ESP_FAIL, err, TAG,  "Failed open file:%s", filepath);
+    // Open and play the audio file
+    FILE* fp = fopen(filepath, "r");
+    ESP_GOTO_ON_FALSE(fp, ESP_FAIL, err, TAG, "Failed to open file: %s", filepath);
 
-    ESP_LOGI(TAG, "play: %s", filepath);
+    ESP_LOGI(TAG, "Playing: %s", filepath);
     ret = audio_player_play(fp);
 err:
     return ret;
 }
+
 
 static esp_err_t app_mute_function(AUDIO_PLAYER_MUTE_SETTING setting)
 {
