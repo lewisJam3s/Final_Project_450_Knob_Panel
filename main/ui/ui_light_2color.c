@@ -22,13 +22,18 @@ static bool light_2color_layer_enter_cb(void* layer);
 static bool light_2color_layer_exit_cb(void* layer);
 static void light_2color_layer_timer_cb(lv_timer_t* tmr);
 static EventGroupHandle_t light_event_group;
-
+static EventGroupHandle_t schedule_event_group;
+const EventBits_t EVENT_BRIGHTNESS_UPDATE = (1 << 5); // Adjust the bit position as needed
+const EventBits_t SCHEDULE_RESUME = (1 << 0);
+const EventBits_t SCHEDULE_PAUSE = (1 << 1);
 // Event bits for brightness levels
 #define EVENT_BRIGHTNESS_0    (1 << 0)
 #define EVENT_BRIGHTNESS_25   (1 << 1)
 #define EVENT_BRIGHTNESS_50   (1 << 2)
 #define EVENT_BRIGHTNESS_75   (1 << 3)
 #define EVENT_BRIGHTNESS_100  (1 << 4)
+
+bool schedule_active = true;
 
 typedef enum {
     LIGHT_CCK_WARM,
@@ -47,6 +52,19 @@ typedef struct {
     const lv_img_dsc_t* img_pwm_75[2];
     const lv_img_dsc_t* img_pwm_100[2];
 } ui_light_img_t;
+
+typedef struct {
+    uint8_t light_level;
+    LIGHT_CCK_TYPE light_color;
+} light_setting_t;
+
+light_setting_t light_settings[] = {
+    {50, LIGHT_CCK_WARM},
+    {100, LIGHT_CCK_COOL},
+    {75, LIGHT_CCK_COOL},
+    {25, LIGHT_CCK_WARM},
+    {0, LIGHT_CCK_COOL}
+};
 
 static lv_obj_t* page;
 static time_out_count time_20ms, time_500ms;
@@ -74,6 +92,8 @@ lv_layer_t light_2color_Layer = {
     .timer_cb = light_2color_layer_timer_cb,
 };
 
+
+
 static void light_2color_event_cb(lv_event_t* e)
 {
     lv_event_code_t code = lv_event_get_code(e);
@@ -97,8 +117,29 @@ static void light_2color_event_cb(lv_event_t* e)
         }
     }
     else if (LV_EVENT_CLICKED == code) {
-        light_set_conf.light_cck = \
-            (LIGHT_CCK_WARM == light_set_conf.light_cck) ? (LIGHT_CCK_COOL) : (LIGHT_CCK_WARM);
+        static uint32_t last_click_time = 0;
+        uint32_t current_time = lv_tick_get();
+
+        if (current_time - last_click_time <= 500) {
+            // Double-click detected
+            schedule_active = !schedule_active;
+
+            // Signal the schedule task to pause or resume
+            if (schedule_active) {
+                xEventGroupSetBits(schedule_event_group, SCHEDULE_RESUME);
+            }
+            else {
+                xEventGroupSetBits(schedule_event_group, SCHEDULE_PAUSE);
+            }
+        }
+        else {
+            // Single-click detected
+            light_set_conf.light_cck = (LIGHT_CCK_WARM == light_set_conf.light_cck) ? (LIGHT_CCK_COOL) : (LIGHT_CCK_WARM);
+            // Signal the main task to update the light settings
+            xEventGroupSetBits(light_event_group, EVENT_BRIGHTNESS_UPDATE);
+        }
+
+        last_click_time = current_time;
     }
     else if (LV_EVENT_LONG_PRESSED == code) {
         lv_indev_wait_release(lv_indev_get_next(NULL));
@@ -198,6 +239,66 @@ static void voice_announcement_task(void* param) {
         }
     }
 }
+const int num_settings = sizeof(light_settings) / sizeof(light_settings[0]);
+int current_setting_index = 0;
+
+void schedule_task(void* pvParameters) {
+    EventBits_t uxBits;
+   
+
+    while (1) {
+        uxBits = xEventGroupWaitBits(
+            schedule_event_group,
+            SCHEDULE_RESUME,
+            pdTRUE,
+            pdFALSE,
+            portMAX_DELAY
+        );
+
+        if (uxBits & SCHEDULE_RESUME) {
+            // Schedule is active, continue with normal operation
+            while (schedule_active) {
+                // Update the light settings
+                light_set_conf.light_pwm = light_settings[current_setting_index].light_level;
+                light_set_conf.light_cck = light_settings[current_setting_index].light_color;
+
+                // Signal the main task to update the light settings
+                xEventGroupSetBits(light_event_group, EVENT_BRIGHTNESS_UPDATE);
+
+                // Move to the next setting or loop back to the beginning
+                current_setting_index = (current_setting_index + 1) % num_settings;
+
+                // Calculate the next wake-up time based on the current index
+                if (current_setting_index == 1) {
+                    vTaskDelay(10000 / portTICK_PERIOD_MS);
+                }
+                else if (current_setting_index == 2) {
+                    vTaskDelay(15000 / portTICK_PERIOD_MS);
+                }
+                else if (current_setting_index == 3) {
+                    vTaskDelay(15000 / portTICK_PERIOD_MS);
+                }
+                else if (current_setting_index == 4) {
+                    vTaskDelay(15000 / portTICK_PERIOD_MS);
+                }
+                else {
+                    vTaskDelay(20000 / portTICK_PERIOD_MS);
+                }
+
+            }
+        }
+        else {
+            // Schedule is paused, wait for the resume signal
+            xEventGroupWaitBits(
+                schedule_event_group,
+                SCHEDULE_RESUME,
+                pdTRUE,
+                pdFALSE,
+                portMAX_DELAY
+            );
+        }
+    }
+}
 
 static bool light_2color_layer_enter_cb(void* layer)
 {
@@ -215,6 +316,9 @@ static bool light_2color_layer_enter_cb(void* layer)
         set_time_out(&time_20ms, 20);
         set_time_out(&time_500ms, 200);
         light_event_group = xEventGroupCreate();
+        schedule_event_group = xEventGroupCreate();
+        schedule_active = true;
+        xEventGroupSetBits(schedule_event_group, SCHEDULE_RESUME);
 
         if (light_event_group == NULL) {
             printf("Error: Failed to create event group.\n");
@@ -229,6 +333,14 @@ static bool light_2color_layer_enter_cb(void* layer)
             NULL,                     // Task parameters
             5,                        // Task priority
             NULL                      // Task handle
+        );
+        xTaskCreate(
+            schedule_task,
+            "ScheduleTask",
+            2048,
+            NULL,
+            5,
+            NULL
         );
     }
 
